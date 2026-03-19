@@ -90,17 +90,12 @@ def clear_database():
     st.rerun()
 
 def get_responsive_image_html(image_path):
-    """
-    Renders the image so it is responsive but NEVER upscales beyond its true quality.
-    Uses HTML5 'download' attribute to safely save the image to the user's computer.
-    """
     with open(image_path, "rb") as f:
         data = base64.b64encode(f.read()).decode("utf-8")
         ext = image_path.split('.')[-1].lower()
         mime = f"image/{ext}" if ext in ['png', 'jpg', 'jpeg'] else 'image/png'
         filename = os.path.basename(image_path)
         
-        # ALL text must be flush left to avoid triggering Markdown code blocks
         html = f"""<div style="margin: 15px 0;">
 <img src="data:{mime};base64,{data}" alt="Retrieved Diagram" style="max-width: 100%; width: auto; height: auto; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
 <br>
@@ -136,10 +131,13 @@ def process_pdf_pipeline(uploaded_file):
         result = converter.convert(temp_pdf_path)
         md_content = result.document.export_to_markdown(image_mode=ImageRefMode.EMBEDDED)
 
-        st.write("🖼️ **Step 2:** Saving visuals to disk...")
+        st.write("🖼️ **Step 2:** Saving visuals to disk with decorative image filtering...")
         pattern = r"!\[(.*?)\]\(data:image/(.*?);base64,(.*?)\)"
         matches = list(re.finditer(pattern, md_content, re.DOTALL))
-        st.write(f"Found {len(matches)} images to extract.")
+        
+        # Tracking counts for logging
+        total_found = len(matches)
+        saved_count = 0
 
         existing_images_count = len([f for f in os.listdir(IMAGES_DIR) if os.path.isfile(os.path.join(IMAGES_DIR, f))])
         
@@ -152,7 +150,15 @@ def process_pdf_pipeline(uploaded_file):
             img_bytes = base64.b64decode(base64_data)
             image = Image.open(BytesIO(img_bytes))
             
-            image_filename = f"image_{existing_images_count + i + 1}.{img_format if img_format else 'png'}"
+            # --- HEURISTIC FILTER: Skip decorative animal icons ---
+            width, height = image.size
+            if width < 300 or height < 300:
+                # Remove the markdown link from text so it's not indexed without an image
+                clean_content = clean_content.replace(match.group(0), "", 1)
+                continue
+            
+            saved_count += 1
+            image_filename = f"image_{existing_images_count + saved_count}.{img_format if img_format else 'png'}"
             image_filepath = os.path.join(IMAGES_DIR, image_filename)
             
             if image.mode in ("RGBA", "P") and img_format in ("jpeg", "jpg"):
@@ -163,6 +169,8 @@ def process_pdf_pipeline(uploaded_file):
             relative_image_path = f"images/{image_filename}"
             replacement_string = f"![{alt_text}]({relative_image_path})"
             clean_content = clean_content.replace(match.group(0), replacement_string, 1)
+
+        st.write(f"Done! Extracted {saved_count} technical diagrams (Filtered {total_found - saved_count} decorative icons).")
 
         st.write("🧩 **Step 3:** Chunking document hierarchically using LlamaIndex...")
         document = Document(text=clean_content, metadata={"source": uploaded_file.name})
@@ -178,7 +186,7 @@ def process_pdf_pipeline(uploaded_file):
         else:
             st.session_state['index'].insert_nodes(nodes)
             
-        status.update(label="✅ Pipeline Complete! Vectors saved to disk.", state="complete", expanded=False)
+        status.update(label="✅ Pipeline Complete!", state="complete", expanded=False)
         
     if os.path.exists(temp_pdf_path):
         os.remove(temp_pdf_path)
@@ -187,7 +195,7 @@ def process_pdf_pipeline(uploaded_file):
 # 5. STREAMLIT UI & CHAT
 # ==========================================
 st.title("📚 Multimodal Agentic RAG")
-st.markdown("Upload a complex technical PDF. The system parses text, extracts diagrams, and displays source images perfectly.")
+st.markdown("Upload a technical PDF. The system automatically filters out decorative icons and stores high-res diagrams.")
 
 with st.sidebar:
     st.header("Document Ingestion")
